@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+build/
+dist/
+*.egg-info/

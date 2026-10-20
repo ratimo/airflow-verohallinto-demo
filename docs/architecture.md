@@ -30,7 +30,9 @@ The target Airflow environment is reported as `apache/airflow:3.3.0`, Python 3.1
 
 ## GCP, authentication, and cost gate
 
-No GCP project or billing account is configured yet. GCS/BigQuery/Terraform implementation is pending a separate setup decision. The stated target is a new project with a €10 monthly cost ceiling. A GCP budget is an alert, not a guaranteed hard spend cap; further controls should include manual DAG runs initially, bounded BigQuery query bytes, minimal retention, and cost monitoring. A non-Google workload identity provider is not available on the home server, so the workload authentication design must be resolved before connecting it. Never commit credentials or Terraform state.
+The user reports that BigQuery tables have been created in `airflow-verohallinto-demo.autot_veroarvot`. This has not been independently verified from this Mac; the exact objects and whether the Gold view was also created are unconfirmed. No GCP resources were created by this agent. The tables are expected to be empty until ingestion is implemented. Billing status, dataset location, APIs, IAM permissions, and project number remain unknown; this Mac has no `gcloud` or `bq` CLI. Do not recreate existing objects. BigQuery table/view schemas are version-controlled in SQL; Airflow can later run the SQL transformations. Keep the existing dataset outside Terraform; Terraform may later manage the GCS bucket and least-privilege IAM only. GCS/BigQuery data integration is pending a separate configuration and authorization step.
+
+The stated spending ceiling is €10/month. A GCP budget is an alert, not a guaranteed hard spend cap; use manual DAG runs initially, bounded BigQuery query bytes, minimal retention, and cost monitoring. A non-Google workload identity provider is not available on the home server, so workload authentication must be resolved before connecting it. Never commit credentials or Terraform state.
 
 Choose and align GCS and BigQuery locations before creating either. The cost/locality tradeoff needs explicit review because Cloud Storage's Always Free allowance applies only to selected US regions, not Finland.
 
@@ -40,6 +42,6 @@ Choose and align GCS and BigQuery locations before creating either. The cost/loc
 2. Source discovery and immutable raw-file storage with metadata.
 3. Unit/integration tests for update detection, schema drift, and row-level quality reports.
 4. Airflow DAG and deployment instructions matching the existing standalone setup.
-5. Terraform definitions and least-privilege GCS/BigQuery resources, only after project/billing/auth approval.
-6. Bronze/Silver/Gold load and SQL models.
+5. Terraform definitions for an approved GCS bucket and least-privilege IAM only; keep the existing BigQuery dataset and SQL-managed tables outside Terraform.
+6. SQL bootstrap DDL is prepared; implement Bronze/Silver loading and the remaining SQL transformations.
 7. Private Looker Studio report with source caveats and refresh metadata.

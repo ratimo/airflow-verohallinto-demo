@@ -32,6 +32,10 @@ Run the tests with:
 python -m unittest discover -s tests -v
 ```
 
+## BigQuery bootstrap DDL
+
+[`sql/00_create_tables_and_gold_view.sql`](sql/00_create_tables_and_gold_view.sql) contains copy-and-run DDL for the Bronze raw-row table, Silver typed-record table, Silver quality-issue table, pipeline-run audit table, and an initial Gold monthly-by-model view. It targets the existing `airflow-verohallinto-demo.autot_veroarvot` dataset. Running it creates empty objects only; it does not upload or transform data. Execute it in the BigQuery SQL editor with the correct processing location selected. The script uses `CREATE TABLE IF NOT EXISTS`; it will not migrate a table that already exists with a different schema.
+
 ## Current status and next steps
 
 Implemented:
@@ -45,7 +49,8 @@ Implemented:
 Not implemented yet:
 
 - Airflow DAG and deployment to the existing Airflow 3.3.0 installation.
-- Google Cloud Storage and BigQuery integration, Terraform resources, or Looker Studio report.
-- Persistent row-level quality report and warehouse audit tables.
+- GCS raw-file persistence and BigQuery data loading/transformation automation.
+- Terraform resources and Looker Studio report.
+- Persistent row-level quality report and warehouse audit writes.
 
-No GCP project, billing, or cloud resources are created by the current code. These steps require separate approval and a confirmed cost/authentication setup. See [`docs/architecture.md`](docs/architecture.md).
+The user reports that BigQuery tables have been created in `airflow-verohallinto-demo.autot_veroarvot`. This has not been independently verified from this Mac; the exact objects and whether the Gold view was also created are unconfirmed. No GCP resources have been created by this agent. The tables are expected to be empty until ingestion is implemented. Billing status, dataset location, and IAM permissions remain unknown. Do not recreate existing objects. Keep the dataset and SQL-managed objects outside Terraform; Terraform may later manage the GCS bucket and least-privilege IAM after location, authentication, and cost are confirmed. See [`docs/architecture.md`](docs/architecture.md).

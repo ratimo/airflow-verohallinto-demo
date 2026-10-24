@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS `airflow-verohallinto-demo.autot_veroarvot.bronze_veh
   loaded_at_utc TIMESTAMP NOT NULL
 )
 OPTIONS (
-  description = 'Bronze parsed source rows. Original XLS bytes are retained separately in Cloud Storage.'
+  description = 'Bronze parsed source rows and lineage. Original XLS bytes are not stored in this table.'
 );
 
 CREATE TABLE IF NOT EXISTS `airflow-verohallinto-demo.autot_veroarvot.silver_vehicle_tax_values` (

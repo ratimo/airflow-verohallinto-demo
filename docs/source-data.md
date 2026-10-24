@@ -34,7 +34,7 @@ The page labels the year by the year in which the tax decision was made, not by 
 | `Veroprosentti` | Tax percentage | Numeric percentage points, e.g. `18.3` |
 | `Autovero` | Vehicle tax amount | Numeric; the column heading does not explicitly state a currency unit |
 
-The original `.xls` file remains the authoritative raw artifact. The parser preserves raw cell values and adds sheet/row lineage. The current normalized field names deliberately do not assume an EUR suffix because the inspected column headings do not state the currency.
+The official `.xls` is the authoritative source artifact. The direct-to-BigQuery design preserves parsed raw cell values plus file hash and sheet/row lineage in Bronze, but not the original workbook bytes. The task-local copy is not guaranteed to persist. The current normalized field names deliberately do not assume an EUR suffix because the inspected column headings do not state the currency.
 
 ## Limitations and quality controls
 
@@ -46,7 +46,7 @@ The current local inspection found 29,114 populated rows and no normalization is
 
 ## Update detection
 
-The source page's displayed update date (11 May 2026 at inspection) predates the workbook's internal last-saved metadata (6 October 2026). Do not rely on the page date alone. For subsequent checks, discover the current passenger-car link from the page, download only the selected workbook, calculate SHA-256, and skip downstream processing if the content hash is unchanged. Record URL, retrieval time, filename, hash, and available HTTP metadata. Keep the original workbook in a non-repository raw location.
+The source page's displayed update date (11 May 2026 at inspection) predates the workbook's internal last-saved metadata (6 October 2026). Do not rely on the page date alone. For subsequent checks, discover the current passenger-car link from the page, download only the selected workbook, calculate SHA-256, and skip downstream processing if the content hash is unchanged. Record URL, retrieval time, filename, hash, and available HTTP metadata. The original workbook is not committed to the repository; durable archival requires a separately configured persistent location.
 
 ## License and distribution
 

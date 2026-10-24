@@ -1,6 +1,6 @@
 # Used Car Tax Value Analytics Platform
 
-A portfolio-scale data engineering demo built around the Finnish Tax Administration's applied vehicle tax-value tables. The project is being developed incrementally; the current implementation is a local `.xls` parser and validation/inspection layer.
+A portfolio-scale data engineering demo built around the Finnish Tax Administration's applied vehicle tax-value tables. Airflow is responsible for downloading the source workbook, parsing it, and batch-loading parsed source rows directly into BigQuery Bronze. dbt will own Silver/Gold transformations.
 
 ## Source
 
@@ -34,7 +34,7 @@ python -m unittest discover -s tests -v
 
 ## BigQuery bootstrap DDL
 
-[`sql/00_create_tables_and_gold_view.sql`](sql/00_create_tables_and_gold_view.sql) contains copy-and-run DDL for the Bronze raw-row table, Silver typed-record table, Silver quality-issue table, pipeline-run audit table, and an initial Gold monthly-by-model view. It targets the existing `airflow-verohallinto-demo.autot_veroarvot` dataset. Running it creates empty objects only; it does not upload or transform data. Execute it in the BigQuery SQL editor with the correct processing location selected. The script uses `CREATE TABLE IF NOT EXISTS`; it will not migrate a table that already exists with a different schema.
+[`sql/00_create_tables_and_gold_view.sql`](sql/00_create_tables_and_gold_view.sql) contains copy-and-run bootstrap DDL for the initial warehouse objects. It targets the existing `airflow-verohallinto-demo.autot_veroarvot` dataset. Running it creates empty objects only; it does not upload or transform data. Execute it in the BigQuery SQL editor with the correct processing location selected. The script uses `CREATE TABLE IF NOT EXISTS`; it will not migrate a table that already exists with a different schema. As dbt is added, define and manage Silver/Gold transformations there; avoid maintaining the same transformation in both this bootstrap script and dbt.
 
 ## Current status and next steps
 
@@ -46,11 +46,12 @@ Implemented:
 - Normalize verified dates and numeric fields, retaining raw values and reporting invalid fields.
 - Produce a privacy-conscious local inspection summary.
 
-Not implemented yet:
+Implemented locally, not yet verified in the live Airflow/BigQuery environment:
 
-- Airflow DAG and deployment to the existing Airflow 3.3.0 installation.
-- GCS raw-file persistence and BigQuery data loading/transformation automation.
+- Airflow DAG code for source download, workbook parsing, and direct Bronze batch loading; no live BigQuery load has been run.
+- Airflow server deployment and DAG-import/runtime verification.
+- dbt project and Silver/Gold models.
 - Terraform resources and Looker Studio report.
-- Persistent row-level quality report and warehouse audit writes.
+- Persistent archive of the original workbook bytes; Bronze retains parsed cell values and lineage, not the exact XLS binary.
 
-The user reports that BigQuery tables have been created in `airflow-verohallinto-demo.autot_veroarvot`. This has not been independently verified from this Mac; the exact objects and whether the Gold view was also created are unconfirmed. No GCP resources have been created by this agent. The tables are expected to be empty until ingestion is implemented. Billing status, dataset location, and IAM permissions remain unknown. Do not recreate existing objects. Keep the dataset and SQL-managed objects outside Terraform; Terraform may later manage the GCS bucket and least-privilege IAM after location, authentication, and cost are confirmed. See [`docs/architecture.md`](docs/architecture.md).
+The user reports that BigQuery tables have been created in `airflow-verohallinto-demo.autot_veroarvot`; their live schemas and data state have not been independently verified from this Mac. No GCP resources or live data loads have been created by this agent. The design uses direct home-server-to-BigQuery batch loading and does not require a GCS bucket. Billing status, dataset location, IAM permissions, and the Airflow connection remain to be confirmed. Do not recreate existing objects. Keep dbt transformations and warehouse models version-controlled. See [`docs/architecture.md`](docs/architecture.md).

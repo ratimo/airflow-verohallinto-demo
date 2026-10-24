@@ -28,7 +28,6 @@ from google.cloud.bigquery.enums import SourceFormat, WriteDisposition
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 
 from tax_values.source import DownloadedWorkbook, download_latest_workbook
-from tax_values.validation import NormalizedRow, normalize_row
 from tax_values.xls_parser import parse_xls_bytes
 
 GCP_CONN_ID = os.environ.get("VERO_GCP_CONN_ID", "")
@@ -38,9 +37,6 @@ LOCATION = os.environ.get("VERO_BQ_LOCATION") or None
 WORK_DIR = Path(os.environ.get("VERO_WORK_DIR", "/tmp/verohallinto-airflow"))
 
 BRONZE_TABLE = f"{PROJECT_ID}.{DATASET_ID}.bronze_vehicle_tax_rows"
-QUALITY_TABLE = f"{PROJECT_ID}.{DATASET_ID}.silver_quality_issues"
-SILVER_TABLE = f"{PROJECT_ID}.{DATASET_ID}.silver_vehicle_tax_values"
-RUNS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.pipeline_runs"
 
 
 def _json_default(value: Any) -> Any:
@@ -133,21 +129,17 @@ def verohallinto_vehicle_tax_ingestion():
         return {"manifest_path": str(_metadata_path(run_id))}
 
     @task
-    def parse_and_validate(download: dict[str, Any]) -> dict[str, Any]:
+    def parse_source_rows(download: dict[str, Any]) -> dict[str, Any]:
         manifest_path = Path(download["manifest_path"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         rows = parse_xls_bytes(Path(manifest["workbook_path"]).read_bytes())
-        normalized = [normalize_row(row) for row in rows]
+        if not rows:
+            raise ValueError("No passenger-car data rows found; refusing an empty Bronze load.")
         directory = manifest_path.parent
         bronze_path = directory / "bronze.ndjson"
-        quality_path = directory / "quality.ndjson"
         loaded_at = datetime.now(timezone.utc).isoformat()
-        bronze_count = 0
-        quality_count = 0
-        with bronze_path.open("w", encoding="utf-8") as bronze_file, quality_path.open(
-            "w", encoding="utf-8"
-        ) as quality_file:
-            for row in normalized:
+        with bronze_path.open("w", encoding="utf-8") as bronze_file:
+            for row in rows:
                 source_row_id = hashlib.sha256(
                     f'{manifest["source_file_sha256"]}:{row.source_sheet}:{row.source_row}'.encode(
                         "utf-8"
@@ -162,39 +154,22 @@ def verohallinto_vehicle_tax_ingestion():
                     "source_sheet": row.source_sheet,
                     "source_row_number": row.source_row,
                     "retrieved_at_utc": manifest["retrieved_at_utc"],
-                    "raw_values": row.raw_values,
+                    "raw_values": row.values,
                     "loaded_at_utc": loaded_at,
                 }
                 bronze_file.write(json.dumps(bronze, default=_json_default, ensure_ascii=False) + "\n")
-                bronze_count += 1
-                for issue in row.issues:
-                    quality = {
-                        "source_row_id": source_row_id,
-                        "source_file_sha256": manifest["source_file_sha256"],
-                        "source_sheet": row.source_sheet,
-                        "source_row_number": row.source_row,
-                        "field_name": issue.field,
-                        "issue_code": issue.code,
-                        "issue_message": issue.message,
-                        "detected_at_utc": loaded_at,
-                    }
-                    quality_file.write(json.dumps(quality, ensure_ascii=False) + "\n")
-                    quality_count += 1
         manifest.update(
             {
                 "bronze_path": str(bronze_path),
-                "quality_path": str(quality_path),
                 "rows_read": len(rows),
-                "rows_loaded": bronze_count,
-                "quality_issues_total": quality_count,
-                "rows_with_issues": sum(bool(row.issues) for row in normalized),
+                "rows_parsed": len(rows),
             }
         )
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return {"manifest_path": str(manifest_path)}
 
     @task
-    def load_bronze_and_quality(parsed: dict[str, Any]) -> dict[str, Any]:
+    def load_bronze(parsed: dict[str, Any]) -> dict[str, Any]:
         manifest_path = Path(parsed["manifest_path"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         client = _client()
@@ -231,97 +206,14 @@ def verohallinto_vehicle_tax_ingestion():
                 location=LOCATION,
             )
             load_job.result()
-
-        quality_path = Path(manifest["quality_path"])
-        if quality_path.stat().st_size:
-            quality_schema = [
-                SchemaField("source_row_id", "STRING", mode="REQUIRED"),
-                SchemaField("source_file_sha256", "STRING", mode="REQUIRED"),
-                SchemaField("source_sheet", "STRING", mode="REQUIRED"),
-                SchemaField("source_row_number", "INT64", mode="REQUIRED"),
-                SchemaField("field_name", "STRING", mode="REQUIRED"),
-                SchemaField("issue_code", "STRING", mode="REQUIRED"),
-                SchemaField("issue_message", "STRING", mode="REQUIRED"),
-                SchemaField("detected_at_utc", "TIMESTAMP", mode="REQUIRED"),
-            ]
-            with quality_path.open("rb") as quality_file:
-                quality_job = client.load_table_from_file(
-                    quality_file,
-                    QUALITY_TABLE,
-                    job_config=_load_config(quality_schema),
-                    job_id=f"verohallinto_quality_{manifest['source_file_sha256'][:24]}",
-                    location=LOCATION,
-                )
-                quality_job.result()
         manifest["bronze_load"] = "loaded"
+        manifest["rows_loaded"] = load_job.output_rows
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return {"manifest_path": str(manifest_path), "skipped": False}
 
-    @task
-    def transform_silver_and_audit(loaded: dict[str, Any]) -> None:
-        manifest_path = Path(loaded["manifest_path"])
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if loaded.get("skipped"):
-            return
-        client = _client()
-        sha = bigquery.ScalarQueryParameter("sha", "STRING", manifest["source_file_sha256"])
-        run = bigquery.ScalarQueryParameter("run_id", "STRING", manifest["run_id"])
-        sql = f"""
-        INSERT INTO `{SILVER_TABLE}`
-        SELECT
-          source_row_id, source_file_sha256, source_file_name, decision_year,
-          source_sheet, source_row_number, retrieved_at_utc,
-          JSON_VALUE(raw_values, '$."Merkki"'), JSON_VALUE(raw_values, '$."Malli"'),
-          SAFE_CAST(SAFE_CAST(JSON_VALUE(raw_values, '$."Cm3"') AS NUMERIC) AS INT64),
-          JSON_VALUE(raw_values, '$."Käyttövoima"'),
-          SAFE_CAST(SAFE_CAST(JSON_VALUE(raw_values, '$."OvienLkm"') AS NUMERIC) AS INT64),
-          JSON_VALUE(raw_values, '$."Korimalli"'), JSON_VALUE(raw_values, '$."Vetotapa"'),
-          JSON_VALUE(raw_values, '$."Vaihteisto"'),
-          SAFE_CAST(SAFE_CAST(JSON_VALUE(raw_values, '$."Kw"') AS NUMERIC) AS INT64),
-          JSON_VALUE(raw_values, '$."Yksilölliset ominaisuudet"'),
-          SAFE.PARSE_DATE('%Y%m%d', JSON_VALUE(raw_values, '$."Päätöspäivä"')),
-          SAFE.PARSE_DATE('%Y%m%d', JSON_VALUE(raw_values, '$."Ensirekisteröintipäivä"')),
-          SAFE_CAST(JSON_VALUE(raw_values, '$."Ajokm/1000"') AS NUMERIC),
-          SAFE_CAST(JSON_VALUE(raw_values, '$."Ajokm/1000"') AS NUMERIC) * 1000,
-          SAFE_CAST(JSON_VALUE(raw_values, '$."Verotusarvo"') AS NUMERIC),
-          SAFE_CAST(JSON_VALUE(raw_values, '$."Veroprosentti"') AS NUMERIC),
-          SAFE_CAST(JSON_VALUE(raw_values, '$."Autovero"') AS NUMERIC),
-          COALESCE((SELECT COUNT(*) FROM `{QUALITY_TABLE}` q WHERE q.source_row_id = b.source_row_id), 0),
-          CURRENT_TIMESTAMP()
-        FROM `{BRONZE_TABLE}` b
-        WHERE source_file_sha256 = @sha
-          AND NOT EXISTS (
-            SELECT 1 FROM `{SILVER_TABLE}` s WHERE s.source_row_id = b.source_row_id
-          )
-        """
-        _query(client, sql, [sha])
-        audit_sql = f"""
-        INSERT INTO `{RUNS_TABLE}`
-          (run_id, source_url, source_file_name, source_file_sha256, decision_year,
-           started_at_utc, finished_at_utc, status, rows_read, rows_loaded,
-           rows_with_issues, quality_issues_total, error_message)
-        VALUES (@run_id, @source_url, @source_file_name, @sha, @decision_year,
-                TIMESTAMP(@retrieved_at), CURRENT_TIMESTAMP(), 'success',
-                @rows_read, @rows_loaded, @rows_with_issues, @quality_issues_total, NULL)
-        """
-        params = [
-            run,
-            bigquery.ScalarQueryParameter("source_url", "STRING", manifest["source_url"]),
-            bigquery.ScalarQueryParameter("source_file_name", "STRING", manifest["source_file_name"]),
-            sha,
-            bigquery.ScalarQueryParameter("decision_year", "INT64", manifest["decision_year"]),
-            bigquery.ScalarQueryParameter("retrieved_at", "STRING", manifest["retrieved_at_utc"]),
-            bigquery.ScalarQueryParameter("rows_read", "INT64", manifest["rows_read"]),
-            bigquery.ScalarQueryParameter("rows_loaded", "INT64", manifest["rows_loaded"]),
-            bigquery.ScalarQueryParameter("rows_with_issues", "INT64", manifest["rows_with_issues"]),
-            bigquery.ScalarQueryParameter("quality_issues_total", "INT64", manifest["quality_issues_total"]),
-        ]
-        _query(client, audit_sql, params)
-
     downloaded = discover_and_download()
-    parsed = parse_and_validate(downloaded)
-    loaded = load_bronze_and_quality(parsed)
-    transform_silver_and_audit(loaded)
+    parsed = parse_source_rows(downloaded)
+    load_bronze(parsed)
 
 
 verohallinto_vehicle_tax_ingestion()
